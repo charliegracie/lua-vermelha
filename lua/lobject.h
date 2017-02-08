@@ -433,6 +433,7 @@ typedef struct Proto {
   Upvaldesc *upvalues;  /* upvalue information */
   struct LClosure *cache;  /* last-created closure with this prototype */
   TString  *source;  /* used for debug information */
+  int *paramtypes;  /* profiled types of parameters for this prototype */
   GCObject *gclist;
 } Proto;
 

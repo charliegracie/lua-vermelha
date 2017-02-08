@@ -1143,6 +1143,7 @@ void luaV_execute (lua_State *L) {
         else {  /* Lua function */
           /* dispatch the JIT */
           Proto* p = getproto(L->ci->func);
+          int i = 0;
           if (!(p->jitflags & LUA_JITBLACKLIST) &&  /* is not blacklisted */
               p->callcounter == 0 &&             /* called enough times */
               p->compiledcode == NULL) {         /* not yet compiled */
@@ -1153,7 +1154,11 @@ void luaV_execute (lua_State *L) {
              p->compiledcode(L);
           }
           else {
+             /* Execute the function in the interpreter */
              p->callcounter--;
+             for (i = 0; i < p->numparams; i++) {
+               p->paramtypes[i] = L->ci->u.l.base[i].tt_;
+             }
           }
           ci = L->ci;
           goto newframe;  /* restart luaV_execute over new Lua function */

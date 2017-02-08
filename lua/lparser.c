@@ -551,6 +551,7 @@ static void close_func (LexState *ls) {
   lua_State *L = ls->L;
   FuncState *fs = ls->fs;
   Proto *f = fs->f;
+  int i = 0;
   luaK_ret(fs, 0, 0);  /* final return */
   leaveblock(fs);
   luaM_reallocvector(L, f->code, f->sizecode, fs->pc, Instruction);
@@ -565,6 +566,10 @@ static void close_func (LexState *ls) {
   f->sizelocvars = fs->nlocvars;
   luaM_reallocvector(L, f->upvalues, f->sizeupvalues, fs->nups, Upvaldesc);
   f->sizeupvalues = fs->nups;
+  f->paramtypes = luaM_newvector(L, f->numparams, int);
+  for (i = 0; i < f->numparams; i++) {
+    f->paramtypes[i] = LUA_TNONE;
+  }
   lua_assert(fs->bl == NULL);
   ls->fs = fs->prev;
   luaC_checkGC(L);
