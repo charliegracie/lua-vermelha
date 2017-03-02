@@ -272,7 +272,7 @@ StkId vm_mod(lua_State* L, Instruction i) {
    StkId ra = RA(i);
 
    // main body
-    TValue *rb = RKB(i);
+   TValue *rb = RKB(i);
    TValue *rc = RKC(i);
    lua_Number nb; lua_Number nc;
    if (ttisinteger(rb) && ttisinteger(rc)) {
@@ -720,6 +720,10 @@ Lua::FunctionBuilder::FunctionBuilder(Proto* p, Lua::TypeDictionary* types)
    DefineReturnType(NoType);
    setUseBytecodeBuilders();
 
+#if DEBUG
+   fprintf(stderr, "generating %s\n", getMethodName());
+#endif
+
    auto pTValue = types->PointerTo(luaTypes.TValue);
    auto plua_State = types->PointerTo(luaTypes.lua_State);
 
@@ -986,7 +990,7 @@ bool Lua::FunctionBuilder::buildIL() {
    if (prototype->numparams > 0) {
       bool didParamCheck = false;
       for (auto i = 0; i < prototype->numparams; i++) {
-         if ((prototype->paramtypes[i] > LUA_TNONE) && (prototype->paramtypes[i] < LUA_NUMTAGS)) {
+         if ((prototype->paramtypes[i] != LUA_TNONE) && (prototype->paramtypes[i] != LUA_NUMTAGS)) {
             didParamCheck = true;
             auto param = IndexAt(luaTypes.StkId,
                                  Load("base"),
@@ -1019,7 +1023,7 @@ bool Lua::FunctionBuilder::buildIL() {
       fprintf(stderr, "\t%s at %d ra %d ", (char*)luaP_opnames[GET_OPCODE(instructions[instructionIndex])], instructionIndex, GETARG_A(instruction));
 #endif
       if (TraceEnabled_log()) {
-         TraceIL_log("BC%d %s [MB %p]", builder->bcIndex(), (char*)luaP_opnames[GET_OPCODE(instruction)], this);
+         TraceIL_log("BC%d %s [MB %p]\n", builder->bcIndex(), (char*)luaP_opnames[GET_OPCODE(instruction)], this);
       }
 
       // ra = base + GETARG_A(i)
@@ -1384,8 +1388,7 @@ bool  Lua::FunctionBuilder::do_self(TR::BytecodeBuilder* builder, Instruction in
    return true;
 }
 
-void Lua::FunctionBuilder::jit_integer_math(TR::IlBuilder *builder, Instruction instruction, int result_arg, int left_arg, int right_arg) {
-   TR::IlValue *result_reg = jit_R(builder, result_arg);
+void Lua::FunctionBuilder::jit_integer_math(TR::IlBuilder *builder, Instruction instruction, TR::IlValue *result_reg, int left_arg, int right_arg) {
    TR::IlValue *leftint = jit_get_intvalue(builder, left_arg);
    TR::IlValue *rightint = jit_get_intvalue(builder, right_arg);
    TR::IlValue *result = jit_performmath(builder, instruction, leftint, rightint);
@@ -1400,8 +1403,7 @@ void Lua::FunctionBuilder::jit_integer_cmp(TR::IlBuilder *builder, Instruction i
    jit_performcmp(builder, instruction, leftint, rightint);
 }
 
-void Lua::FunctionBuilder::jit_number_math(TR::IlBuilder *builder, Instruction instruction, int result_arg, int left_arg, int left_type, int right_arg, int right_type) {
-   TR::IlValue *result_reg = jit_R(builder, result_arg);
+void Lua::FunctionBuilder::jit_number_math(TR::IlBuilder *builder, Instruction instruction, TR::IlValue *result_reg, int left_arg, int left_type, int right_arg, int right_type) {
    TR::IlValue *leftvalue = jit_tonumber(builder, left_arg, left_type);
    TR::IlValue *rightvalue = jit_tonumber(builder, right_arg, right_type);
    TR::IlValue *result = jit_performmath(builder, instruction, leftvalue, rightvalue);
@@ -1422,9 +1424,7 @@ bool Lua::FunctionBuilder::do_math(TR::BytecodeBuilder* builder, Instruction ins
    int arg_a = GETARG_A(instruction);
    int arg_b = GETARG_B(instruction);
    int arg_c = GETARG_C(instruction);
-   TR::IlValue *ra = jit_R(builder, arg_a);
-   TR::IlValue *rb = jit_RK(builder, arg_b);
-   TR::IlValue *rc = jit_RK(builder, arg_c);
+   TR::IlValue *ra = builder->Load("ra");
 
 #if DEBUG
    fprintf(stderr, " rb %d (%d) rc %d  (%d)", arg_b, get_data_type(datatypes, instructionIndex, arg_b), arg_c, get_data_type(datatypes, instructionIndex, arg_c));
@@ -1432,11 +1432,14 @@ bool Lua::FunctionBuilder::do_math(TR::BytecodeBuilder* builder, Instruction ins
 
    int b_type = get_data_type(datatypes, instructionIndex, arg_b);
    int c_type = get_data_type(datatypes, instructionIndex, arg_c);
+   // If the data flow analysis generated a specific type then just generate the code for that path
    if (is_data_type_int(b_type) && is_data_type_int(c_type)) {
-      jit_integer_math(builder, instruction, arg_a, arg_b, arg_c);
+      jit_integer_math(builder, instruction, ra, arg_b, arg_c);
    } else if (is_data_type_number(b_type) && is_data_type_number(c_type)) {
-      jit_number_math(builder, instruction, arg_a, arg_b, b_type, arg_c, c_type);
+      jit_number_math(builder, instruction, ra, arg_b, b_type, arg_c, c_type);
    } else {
+      TR::IlValue *rb = jit_RK(builder, arg_b);
+      TR::IlValue *rc = jit_RK(builder, arg_c);
       // if (ttisinteger(rb) && ttisinteger(rc))
       auto rbtype = jit_get_type(builder, arg_b);
       auto isrbint = jit_isinteger(builder, rbtype);
@@ -1450,8 +1453,8 @@ bool Lua::FunctionBuilder::do_math(TR::BytecodeBuilder* builder, Instruction ins
 
       // lua_Integer ib = ivalue(rb); lua_Integer ic = ivalue(rc);
       // setivalue(ra, intop([+,-,*], ib, ic));
-      TR::IlValue *rbint = jit_get_intvalue(ints, arg_b);
-      TR::IlValue *rcint = jit_get_intvalue(ints, arg_c);
+      TR::IlValue *rbint = jit_get_intvalue(ints, rb);
+      TR::IlValue *rcint = jit_get_intvalue(ints, rc);
       TR::IlValue *intresult = jit_performmath(ints, instruction, rbint, rcint);
 
       jit_set_intvalue(ints, ra, intresult);
@@ -1521,7 +1524,7 @@ bool Lua::FunctionBuilder::do_pow(TR::BytecodeBuilder* builder, Instruction inst
    builder->           ConstInt32(instruction)));
 
 #if DEBUG
-   fprintf(stderr, " rb %d (%d) rc %d  (%d)", GETARG_B(instruction), GETARG_C(instruction));
+   fprintf(stderr, " rb %d rc %d ", GETARG_B(instruction), GETARG_C(instruction));
 #endif
 
    return true;
@@ -1533,9 +1536,7 @@ bool Lua::FunctionBuilder::do_div(TR::BytecodeBuilder* builder, Instruction inst
    int arg_a = GETARG_A(instruction);
    int arg_b = GETARG_B(instruction);
    int arg_c = GETARG_C(instruction);
-   TR::IlValue *ra = jit_RK(builder, arg_a);
-   TR::IlValue *rb = jit_RK(builder, arg_b);
-   TR::IlValue *rc = jit_RK(builder, arg_c);
+   TR::IlValue *ra = builder->Load("ra");
 
 #if DEBUG
    fprintf(stderr, " rb %d (%d) rc %d  (%d)", arg_b, get_data_type(datatypes, instructionIndex, arg_b), arg_c, get_data_type(datatypes, instructionIndex, arg_c));
@@ -1544,8 +1545,10 @@ bool Lua::FunctionBuilder::do_div(TR::BytecodeBuilder* builder, Instruction inst
    int b_type = get_data_type(datatypes, instructionIndex, arg_b);
    int c_type = get_data_type(datatypes, instructionIndex, arg_c);
    if (is_data_type_number(b_type) && is_data_type_number(c_type)) {
-      jit_number_math(builder, instruction, arg_a, arg_b, b_type, arg_c, c_type);
+      jit_number_math(builder, instruction, ra, arg_b, b_type, arg_c, c_type);
    } else {
+      TR::IlValue *rb = jit_RK(builder, arg_b);
+      TR::IlValue *rc = jit_RK(builder, arg_c);
       // if (ttisnumber(rb) && ttisnumber(rc))
       auto rbtype = jit_get_type(builder, arg_b);
       auto isrbnum = jit_isnumber(builder, rbtype);
@@ -1763,8 +1766,8 @@ bool Lua::FunctionBuilder::do_cmp(const char* cmpFunc, TR::BytecodeBuilder* buil
       builder->           And(isleftint, isrightint));
 
       // return (int)l [<,<=] (int)r
-      TR::IlValue *leftint = jit_get_intvalue(cmpints, GETARG_B(instruction));
-      TR::IlValue *rightint = jit_get_intvalue(cmpints, GETARG_C(instruction));
+      TR::IlValue *leftint = jit_get_intvalue(cmpints, left);
+      TR::IlValue *rightint = jit_get_intvalue(cmpints, right);
 
       jit_performcmp(cmpints, instruction, leftint, rightint);
 
@@ -1828,10 +1831,6 @@ bool Lua::FunctionBuilder::do_testset(TR::BytecodeBuilder* builder, TR::Bytecode
 }
 
 bool Lua::FunctionBuilder::do_call(TR::BytecodeBuilder* builder, Instruction instruction, int instructionIndex) {
-   // b = GETARG_B(i);
-   builder->Store("b",
-   builder->      ConstInt32(GETARG_B(instruction)));
-
    // nresults = GETARG_C(i) - 1;
    builder->Store("nresults",
    builder->      Sub(
@@ -1839,17 +1838,19 @@ bool Lua::FunctionBuilder::do_call(TR::BytecodeBuilder* builder, Instruction ins
    builder->          ConstInt32(1)));
 
    // if (b != 0) L->top = ra+b;
-   TR::IlBuilder* settop = builder->OrphanBuilder();
-   builder->IfThen(&settop,
-   builder->       NotEqualTo(
-   builder->                  Load("b"),
-   builder->                  ConstInt32(0)));
+   if (GETARG_B(instruction) != 0) {
+      TR::IlBuilder* settop = builder->OrphanBuilder();
+      builder->IfThen(&settop,
+      builder->       NotEqualTo(
+      builder->                  ConstInt32(GETARG_B(instruction)),
+      builder->                  ConstInt32(0)));
 
-   settop->StoreIndirect("lua_State", "top",
-   settop->               Load("L"),
-   settop->               IndexAt(luaTypes.StkId,
-   settop->                   Load("ra"),
-   settop->                   Load("b")));
+      settop->StoreIndirect("lua_State", "top",
+      settop->               Load("L"),
+      settop->               IndexAt(luaTypes.StkId,
+      settop->                   Load("ra"),
+      settop->                   ConstInt32(GETARG_B(instruction))));
+   }
 
    //before we do any calls set savedpc so hooks can work
    jit_setsavedpc(builder, instructionIndex);
@@ -2009,12 +2010,18 @@ bool Lua::FunctionBuilder::do_return(TR::BytecodeBuilder* builder, Instruction i
 
 bool Lua::FunctionBuilder::do_forloop(TR::BytecodeBuilder* builder, TR::BytecodeBuilder* loopStart, Instruction instruction, int instructionIndex) {
    int raIndex = GETARG_A(instruction);
-   TR::IlValue *index = jit_R(builder, raIndex);
+   TR::IlValue *index = builder->Load("ra");
    TR::IlValue *limit = jit_R(builder, raIndex + 1);
    TR::IlValue *step = jit_R(builder, raIndex + 2);
    TR::IlValue *externalIndex = jit_R(builder, raIndex + 3);
 
+   TR::IlValue *indexValue = jit_get_intvalue(builder, index);
+   TR::IlValue *limitValue = jit_get_intvalue(builder, limit);
+   TR::IlValue *stepValue = jit_get_intvalue(builder, step);
+   TR::IlValue *nextIndexValue = builder->Add(indexValue, stepValue);
+
    TR::IlBuilder *intloop = nullptr;
+
    int index_type = get_data_type(datatypes, instructionIndex, raIndex);
    if (is_data_type_int(index_type)) {
       // If data flow analysis say that index is an int then do not generate any checks
@@ -2029,11 +2036,6 @@ bool Lua::FunctionBuilder::do_forloop(TR::BytecodeBuilder* builder, TR::Bytecode
       notints->           Load("L"),
       notints->           ConstInt32(instruction)));
    }
-
-   TR::IlValue *indexValue = intloop->LoadIndirect("Value", "i", StructFieldAddress(intloop, "TValue", "value_", index));
-   TR::IlValue *limitValue = intloop->LoadIndirect("Value", "i", StructFieldAddress(intloop, "TValue", "value_", limit));
-   TR::IlValue *stepValue = intloop->LoadIndirect("Value", "i", StructFieldAddress(intloop, "TValue", "value_", step));
-   TR::IlValue *nextIndexValue = intloop->Add(indexValue, stepValue);
 
    //if ((0 < step) ? (idx <= limit) : (limit <= idx))
    TR::IlBuilder *negativeStepInt = nullptr;
@@ -2053,10 +2055,10 @@ bool Lua::FunctionBuilder::do_forloop(TR::BytecodeBuilder* builder, TR::Bytecode
    breakLoopInt->Store("continueLoop",
    breakLoopInt->      ConstInt32(0));
 
-   continueLoopInt->StoreIndirect("Value", "i", StructFieldAddress(continueLoopInt, "TValue", "value_", index), nextIndexValue);
+   jit_set_intvalue(continueLoopInt, index, nextIndexValue);
    /* Do NOT have to set type on "index" as it is already an int */
-   continueLoopInt->StoreIndirect("Value", "i", StructFieldAddress(continueLoopInt, "TValue", "value_", externalIndex), nextIndexValue);
-   continueLoopInt->StoreIndirect("TValue", "tt_", externalIndex, intType);
+   jit_set_intvalue(continueLoopInt, externalIndex, nextIndexValue);
+   jit_set_type(continueLoopInt, externalIndex, intType);
    continueLoopInt->Store("continueLoop",
    continueLoopInt->      ConstInt32(1));
 
@@ -2068,7 +2070,7 @@ bool Lua::FunctionBuilder::do_forloop(TR::BytecodeBuilder* builder, TR::Bytecode
 
 bool Lua::FunctionBuilder::do_forprep(TR::BytecodeBuilder* builder, Instruction instruction, int instructionIndex) {
    int raIndex = GETARG_A(instruction);
-   TR::IlValue *index = jit_R(builder, raIndex);
+   TR::IlValue *index = builder->Load("ra");
    TR::IlValue *limit = jit_R(builder, raIndex + 1);
    TR::IlValue *step = jit_R(builder, raIndex + 2);
    TR::IlBuilder *intloop = nullptr;
@@ -2094,10 +2096,10 @@ bool Lua::FunctionBuilder::do_forprep(TR::BytecodeBuilder* builder, Instruction 
    }
 
 
-   TR::IlValue *indexValue = intloop->LoadIndirect("Value", "i", StructFieldAddress(intloop, "TValue", "value_", index));
-   TR::IlValue *stepValue = intloop->LoadIndirect("Value", "i", StructFieldAddress(intloop, "TValue", "value_", step));
+   TR::IlValue *indexValue = jit_get_intvalue(intloop, index);
+   TR::IlValue *stepValue = jit_get_intvalue(intloop, step);
    TR::IlValue *startIndex = intloop->Sub(indexValue, stepValue);
-   intloop->StoreIndirect("Value", "i", StructFieldAddress(intloop, "TValue", "value_", index), startIndex);
+   jit_set_intvalue(intloop, index, startIndex);
 
    return true;
 }
@@ -2197,8 +2199,8 @@ bool Lua::FunctionBuilder::do_closure(TR::BytecodeBuilder* builder, Instruction 
 bool Lua::FunctionBuilder::do_vararg(TR::BytecodeBuilder* builder, Instruction instruction) {
    //int n = cast_int(base - ci->func) - cl->p->numparams - 1;
    builder->Store("n",
-   builder->	Sub(
-   builder->		ConvertTo(Int32,
+   builder->   Sub(
+   builder->      ConvertTo(Int32,
    builder->                  Div(
    builder->                      Sub(
    builder->                          ConvertTo(Int64,
@@ -2302,8 +2304,8 @@ void Lua::FunctionBuilder::jit_setobj(TR::IlBuilder* builder, TR::IlValue* dest,
    // *dest = *src;
    auto src_value = jit_get_value(builder, src);
    auto src_tt = jit_get_type(builder, src);
-   builder->StoreIndirect("TValue", "value_", dest, src_value);
-   builder->StoreIndirect("TValue", "tt_", dest, src_tt);
+   jit_set_value(builder, dest, src_value);
+   jit_set_type(builder, dest, src_tt);
 }
 
 void Lua::FunctionBuilder::jit_Protect(TR::IlBuilder* builder) {
@@ -2354,11 +2356,9 @@ TR::IlValue* Lua::FunctionBuilder::jit_get_type(TR::IlBuilder* builder, int arg)
    TR::IlValue *type = nullptr;
    if (ISK(arg)) {
       arg = INDEXK(arg);
-      type = builder->ConvertTo(typeDictionary()->toIlType<decltype(TValue::tt_)>(),
-             builder->          Const(prototype->k[arg].tt_));
+      type = builder->Const(prototype->k[arg].tt_);
    } else {
-      TR::IlValue *object = jit_R(builder, arg);
-      type =  jit_get_type(builder, object);
+      type =  jit_get_type(builder, jit_R(builder, arg));
    }
    return type;
 }
@@ -2371,28 +2371,36 @@ TR::IlValue* Lua::FunctionBuilder::jit_get_intvalue(TR::IlBuilder* builder, int 
    TR::IlValue *value = nullptr;
    if (ISK(arg)) {
       arg = INDEXK(arg);
+      // This should just be Const() with no convertTo
       value = builder->ConvertTo(typeDictionary()->toIlType<decltype(TValue::value_.i)>(),
               builder->          ConstInt64(prototype->k[arg].value_.i));
    } else {
-      TR::IlValue *object = jit_R(builder, arg);
-      TR::IlValue *structAddr = StructFieldAddress(builder, "TValue", "value_", object);
-      value =  builder->LoadIndirect("Value", "i", structAddr);
+      value = jit_get_intvalue(builder, jit_R(builder, arg));
    }
    return value;
+}
+
+TR::IlValue* Lua::FunctionBuilder::jit_get_intvalue(TR::IlBuilder* builder, TR::IlValue *obj) {
+   TR::IlValue *structAddr = StructFieldAddress(builder, "TValue", "value_", obj);
+   return builder->LoadIndirect("Value", "i", structAddr);
 }
 
 TR::IlValue* Lua::FunctionBuilder::jit_get_fltvalue(TR::IlBuilder* builder, int arg) {
    TR::IlValue *value = nullptr;
    if (ISK(arg)) {
       arg = INDEXK(arg);
+      // This should just be Const() with no convertTo
       value = builder->ConvertTo(typeDictionary()->toIlType<decltype(TValue::value_.n)>(),
               builder->          ConstDouble(prototype->k[arg].value_.n));
    } else {
-      TR::IlValue *object = jit_R(builder, arg);
-      TR::IlValue *structAddr = StructFieldAddress(builder, "TValue", "value_", object);
-      value =  builder->LoadIndirect("Value", "n", structAddr);
+      value = jit_get_fltvalue(builder, jit_R(builder, arg));
    }
    return value;
+}
+
+TR::IlValue* Lua::FunctionBuilder::jit_get_fltvalue(TR::IlBuilder* builder, TR::IlValue *obj) {
+   TR::IlValue *structAddr = StructFieldAddress(builder, "TValue", "value_", obj);
+   return builder->LoadIndirect("Value", "n", structAddr);
 }
 
 void Lua::FunctionBuilder::jit_set_type(TR::IlBuilder* builder, TR::IlValue *obj, TR::IlValue *type) {
@@ -2541,22 +2549,6 @@ void Lua::FunctionBuilder::jit_performcmp(TR::IlBuilder *builder, Instruction in
    fail->      ConstInt32(0));
 }
 
-// jitbuilder extensions ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-TR::IlValue* Lua::FunctionBuilder::StructFieldAddress(TR::IlBuilder* builder, const char* structName, const char* fieldName, TR::IlValue* obj) {
-   auto offset = typeDictionary()->OffsetOf(structName, fieldName);
-   auto ptype = typeDictionary()->PointerTo(typeDictionary()->GetFieldType(structName, fieldName));
-   auto addr = builder->Add(
-                            obj,
-               builder->    ConstInt64(offset));
-   return builder->ConvertTo(ptype, addr);
-}
-
-TR::IlValue* Lua::FunctionBuilder::UnionFieldAddress(TR::IlBuilder* builder, const char* unionName, const char* fieldName, TR::IlValue* obj) {
-   auto ptype = typeDictionary()->PointerTo(typeDictionary()->GetFieldType(unionName, fieldName));
-   return builder->ConvertTo(ptype, obj);
-}
-
 int **Lua::FunctionBuilder::alloc_data_flow_array(int instructionCount, int registerCount) {
    int size = instructionCount * sizeof(int*);
    int **dataFlowTypes = (int**)malloc(size);
@@ -2605,12 +2597,13 @@ void Lua::FunctionBuilder::complete_data_flow_analysis(Proto *prototype, int sta
    }
 
    for (int instructionIndex = startInstrution; instructionIndex < endInstruction; instructionIndex++) {
-      data_flow_for_opcode(prototype, prototype->code[instructionIndex], instructionIndex, dataTypes, allowModifications);
+      data_flow_for_opcode(prototype, prototype->code, instructionIndex, dataTypes, allowModifications);
    }
 }
 
-void Lua::FunctionBuilder::data_flow_for_opcode(Proto* prototype, Instruction instruction, int instructionIndex, int **dataTypes, bool allowModifications) {
+void Lua::FunctionBuilder::data_flow_for_opcode(Proto* prototype, Instruction *instructions, int instructionIndex, int **dataTypes, bool allowModifications) {
    bool forcedModification = false;
+   Instruction instruction = instructions[instructionIndex];
    int ra = GETARG_A(instruction);
    int raType = dataTypes[instructionIndex][ra];
    int nextInstructionIndex = instructionIndex + 1;
@@ -2622,6 +2615,41 @@ void Lua::FunctionBuilder::data_flow_for_opcode(Proto* prototype, Instruction in
       case OP_LOADK:
          raType = prototype->k[GETARG_Bx(instruction)].tt_;
          forcedModification = true;
+         break;
+      case OP_LOADKX:
+         raType = prototype->k[GETARG_Ax(instructions[nextInstructionIndex])].tt_;
+         forcedModification = true;
+         break;
+      case OP_LOADBOOL:
+         raType = LUA_TBOOLEAN;
+         break;
+      case OP_LOADNIL:
+         copy_data_types_to_next(prototype, dataTypes, instructionIndex, nextInstructionIndex, false);
+         for (int i = 0; i < GETARG_B(instruction); i++) {
+            set_data_type(dataTypes, nextInstructionIndex, ra + i, LUA_TNIL, allowModifications, forcedModification);
+         }
+         nextInstructionIndex = -1;
+         break;
+      case OP_GETUPVAL:
+      case OP_GETTABUP:
+      case OP_GETTABLE:
+         // Do not know what the type will be!
+         raType = LUA_NUMTAGS;
+         break;
+      case OP_SETTABUP:
+      case OP_SETUPVAL:
+         // I believe these do not change the registers. I am not sure about OP_SETUPVAL
+         break;
+      case OP_SETTABLE:
+         // Do not know what the type will be!
+         raType = LUA_NUMTAGS;
+         break;
+      case OP_NEWTABLE:
+         raType = LUA_TTABLE;
+         break;
+      case OP_SELF:
+         set_data_type(dataTypes, nextInstructionIndex, ra + 1, get_data_type(dataTypes, instructionIndex, GETARG_B(instruction)), allowModifications, forcedModification);
+         raType = LUA_NUMTAGS;
          break;
       case OP_ADD:
       case OP_SUB:
@@ -2636,7 +2664,23 @@ void Lua::FunctionBuilder::data_flow_for_opcode(Proto* prototype, Instruction in
          } else if (is_data_type_number(rbType) && is_data_type_number(rcType)) {
             raType = LUA_TNUMFLT;
          } else {
-            /* This only happens if rb and rc are not known to be numbers */
+            // This only happens if rb and rc are not known to be numbers
+            raType = LUA_NUMTAGS;
+         }
+      }
+         break;
+      case OP_BAND:
+      case OP_BOR:
+      case OP_BXOR:
+      case OP_SHL:
+      case OP_SHR:
+      {
+         int rbType = get_data_type(dataTypes, instructionIndex, GETARG_B(instruction));
+         int rcType = get_data_type(dataTypes, instructionIndex, GETARG_C(instruction));
+         if (is_data_type_int(rbType) && is_data_type_int(rcType)) {
+            raType = LUA_TNUMINT;
+         } else {
+            // This is pessimistic as a lot of floats may be converted to ints
             raType = LUA_NUMTAGS;
          }
       }
@@ -2649,7 +2693,7 @@ void Lua::FunctionBuilder::data_flow_for_opcode(Proto* prototype, Instruction in
          if (is_data_type_number(rbType) && is_data_type_number(rcType)) {
             raType = LUA_TNUMFLT;
          } else {
-            /* This only happens if rb and rc are not known to be numbers */
+            // This only happens if rb and rc are not known to be numbers
             raType = LUA_NUMTAGS;
          }
       }
@@ -2662,7 +2706,7 @@ void Lua::FunctionBuilder::data_flow_for_opcode(Proto* prototype, Instruction in
          } else if (is_data_type_number(rbType)) {
             raType = LUA_TNUMFLT;
          } else {
-            /* This only happens if rb and rc are not known to be numbers */
+            /* This only happens if rb is not a number */
             raType = LUA_NUMTAGS;
          }
       }
@@ -2684,23 +2728,33 @@ void Lua::FunctionBuilder::data_flow_for_opcode(Proto* prototype, Instruction in
       case OP_CONCAT:
          raType = LUA_NUMTAGS;
          break;
-      case OP_FORPREP:
+      case OP_JMP:
+      case OP_EQ:
+      case OP_LT:
+      case OP_LE:
+      case OP_TEST:
+         // These do not change any registers
+         break;
+      case OP_TESTSET:
+         // This can set ra to rb or leave it unmodified so for now I have to assume I do not know what it should be
+         raType = LUA_NUMTAGS;
+         break;
+      case OP_CALL:
       {
-         int index = ra;
-         int indexType = get_data_type(dataTypes, instructionIndex, index);
-         int limit = ra + 1;
-         int limitType = get_data_type(dataTypes, instructionIndex, limit);
-         int step = ra + 2;
-         int stepType = get_data_type(dataTypes, instructionIndex, step);
-         int externalIndex = ra + 3;
-         if (is_data_type_int(indexType) && is_data_type_int(limitType) && is_data_type_number(stepType)) {
-            raType = LUA_TNUMINT;
-         } else {
-            raType = LUA_NUMTAGS;
+         int nresults = GETARG_C(instruction) - 1;
+         copy_data_types_to_next(prototype, dataTypes, instructionIndex, nextInstructionIndex, false);
+         for (int i = 0; i < nresults; i++) {
+            /* TODO update this to set type to interpreter profiled return types */
+            set_data_type(dataTypes, nextInstructionIndex, ra + i, LUA_NUMTAGS, false, true);
          }
-         /* ra is not changing.  externalIndex is so set ra to externalIndex */
-         ra = externalIndex;
+         nextInstructionIndex = -1;
       }
+         break;
+      case OP_TAILCALL:
+         // TODO!!! not handled!!!! Currently methods which use this opcode are not compiled!!!!
+         break;
+      case OP_RETURN:
+         nextInstructionIndex = -1;
          break;
       case OP_FORLOOP:
       {
@@ -2732,7 +2786,7 @@ void Lua::FunctionBuilder::data_flow_for_opcode(Proto* prototype, Instruction in
 
                //run through all opcodes
                for (int index = destinationIndex; index < instructionIndex; index++) {
-                  data_flow_for_opcode(prototype, prototype->code[index], index, loopDataTypes, true);
+                  data_flow_for_opcode(prototype, prototype->code, index, loopDataTypes, true);
                }
 
                //compare original types to new types. If they are different copy and loop again
@@ -2762,21 +2816,45 @@ void Lua::FunctionBuilder::data_flow_for_opcode(Proto* prototype, Instruction in
          }
       }
          break;
-      case OP_CALL:
+      case OP_FORPREP:
       {
-         int nresults = GETARG_C(instruction) - 1;
-         copy_data_types_to_next(prototype, dataTypes, instructionIndex, nextInstructionIndex, false);
-         for (int i = 0; i < nresults; i++) {
-            /* TODO update this to set type to interpreter profiled return types */
-            set_data_type(dataTypes, nextInstructionIndex, ra + i, LUA_NUMTAGS, false, true);
+         int index = ra;
+         int indexType = get_data_type(dataTypes, instructionIndex, index);
+         int limit = ra + 1;
+         int limitType = get_data_type(dataTypes, instructionIndex, limit);
+         int step = ra + 2;
+         int stepType = get_data_type(dataTypes, instructionIndex, step);
+         int externalIndex = ra + 3;
+         if (is_data_type_int(indexType) && is_data_type_int(limitType) && is_data_type_number(stepType)) {
+            raType = LUA_TNUMINT;
+         } else {
+            raType = LUA_NUMTAGS;
          }
-         nextInstructionIndex = -1;
+         /* ra is not changing.  externalIndex is so set ra to externalIndex.  This should be handled by forloop
+          * but the initial one has to be handled here for now */
+         ra = externalIndex;
       }
          break;
-      case OP_RETURN:
-         nextInstructionIndex = -1;
+      case OP_TFORCALL:
+         // TODO not sure what to do here yet
+         break;
+      case OP_TFORLOOP:
+         // TODO not sure what to do here yet.  likely something similar to FORLOOP
+         break;
+      case OP_SETLIST:
+         // This only copies register values into a table.  It does not modify any registers
+         break;
+      case OP_CLOSURE:
+         raType = LUA_TLCL;
+         break;
+      case OP_VARARG:
+         // TODO not sure what to do here yet
+         break;
+      case OP_EXTRAARG:
+         // nothing to do
          break;
       default:
+         // Should assert to make sure all opcodes are handled
          break;
    }
 
@@ -2829,13 +2907,7 @@ void Lua::FunctionBuilder::copy_data_types_to_next(Proto *prototype, int **dataT
 }
 
 bool Lua::FunctionBuilder::is_data_type_number(int dataType) {
-   if (dataType == LUA_TNUMINT) {
-      return true;
-   } else if (dataType == LUA_TNUMFLT) {
-      return true;
-   } else {
-      return false;
-   }
+   return is_data_type_int(dataType) || is_data_type_flt(dataType);
 }
 
 bool Lua::FunctionBuilder::is_data_type_int(int dataType) {
@@ -2844,5 +2916,21 @@ bool Lua::FunctionBuilder::is_data_type_int(int dataType) {
 
 bool Lua::FunctionBuilder::is_data_type_flt(int dataType) {
    return dataType == LUA_TNUMFLT;
+}
+
+// jitbuilder extensions ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+TR::IlValue* Lua::FunctionBuilder::StructFieldAddress(TR::IlBuilder* builder, const char* structName, const char* fieldName, TR::IlValue* obj) {
+   auto offset = typeDictionary()->OffsetOf(structName, fieldName);
+   auto ptype = typeDictionary()->PointerTo(typeDictionary()->GetFieldType(structName, fieldName));
+   auto addr = builder->Add(
+                            obj,
+               builder->    ConstInt64(offset));
+   return builder->ConvertTo(ptype, addr);
+}
+
+TR::IlValue* Lua::FunctionBuilder::UnionFieldAddress(TR::IlBuilder* builder, const char* unionName, const char* fieldName, TR::IlValue* obj) {
+   auto ptype = typeDictionary()->PointerTo(typeDictionary()->GetFieldType(unionName, fieldName));
+   return builder->ConvertTo(ptype, obj);
 }
 

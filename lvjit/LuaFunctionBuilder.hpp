@@ -114,7 +114,9 @@ public:
     TR::IlValue* jit_get_type(TR::IlBuilder* builder, int arg);
     TR::IlValue* jit_get_value(TR::IlBuilder* builder, TR::IlValue *obj);
     TR::IlValue* jit_get_intvalue(TR::IlBuilder* builder, int arg);
+    TR::IlValue* jit_get_intvalue(TR::IlBuilder* builder, TR::IlValue *obj);
     TR::IlValue* jit_get_fltvalue(TR::IlBuilder* builder, int arg);
+    TR::IlValue* jit_get_fltvalue(TR::IlBuilder* builder, TR::IlValue *obj);
     void jit_set_type(TR::IlBuilder* builder, TR::IlValue *obj, TR::IlValue *type);
     void jit_set_value(TR::IlBuilder* builder, TR::IlValue *obj, TR::IlValue *value);
     void jit_set_intvalue(TR::IlBuilder* builder, TR::IlValue *obj, TR::IlValue *value);
@@ -129,9 +131,9 @@ public:
     TR::IlValue* jit_isnumber(TR::IlBuilder* builder, TR::IlValue* type);
     TR::IlValue* jit_ttnotnil(TR::IlBuilder* builder, TR::IlValue* value);
     
-    void jit_integer_math(TR::IlBuilder *builder, Instruction instruction, int result_arg, int left_arg, int right_arg);
+    void jit_integer_math(TR::IlBuilder *builder, Instruction instruction, TR::IlValue *result_reg, int left_arg, int right_arg);
     void jit_integer_cmp(TR::IlBuilder *builder, Instruction instruction, int left_arg, int right_arg);
-    void jit_number_math(TR::IlBuilder *builder, Instruction instruction, int result_arg, int left_arg, int left_type, int right_arg, int right_type);
+    void jit_number_math(TR::IlBuilder *builder, Instruction instruction, TR::IlValue *result_reg, int left_arg, int left_type, int right_arg, int right_type);
     void jit_number_cmp(TR::IlBuilder *builder, Instruction instruction, int left_arg, int left_type, int right_arg, int right_type);
     TR::IlValue* jit_performmath(TR::IlBuilder *builder, Instruction instruction, TR::IlValue *left, TR::IlValue *right);
     void jit_performcmp(TR::IlBuilder *builder, Instruction instruction, TR::IlValue *left, TR::IlValue *right);
@@ -139,7 +141,7 @@ public:
     int **alloc_data_flow_array(int instructionCount, int registerCount);
     void free_data_flow_array(int **dataTypeArray, int instructionCount);
     void complete_data_flow_analysis(Proto *prototype, int startInstruction, int endInstruction, int **dataTypes, bool allowModifications);
-    void data_flow_for_opcode(Proto* prototype, Instruction instruction, int instructionIndex, int **dataTypes, bool allowModifications);
+    void data_flow_for_opcode(Proto* prototype, Instruction *instructions, int instructionIndex, int **dataTypes, bool allowModifications);
     bool compare_data_flow_types(int **dataTypes1, int **dataTypes2, int startIndex, int endIndex, int registerCount);
     int get_data_type(int **dataTypes, int instructionIndex, int arg);
     void set_data_type(int **dataTypes, int instructionIndex, int arg, int type, bool allowModifications, bool forcedModification);
